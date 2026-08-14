@@ -1,40 +1,67 @@
 (() => {
-  const MULTIPLIER_RE = /(?:^|\s)(\d+(?:\.\d+)?)\s*x\b/gi;
-  const seen = new Set();
+  const MULTIPLIER_RE = /\b(\d+(?:\.\d+)?)\s*x\b/gi;
   const MAX_HISTORY = 5000;
+  let lastText = '';
+  let lastValue = null;
+  let lastRecordedAt = 0;
 
-  function parseMultipliers(text) {
-    const values = [];
+  function extractCandidates(text) {
+    const out = [];
     let match;
     MULTIPLIER_RE.lastIndex = 0;
     while ((match = MULTIPLIER_RE.exec(text)) !== null) {
-      const n = Number(match[1]);
-      if (Number.isFinite(n) && n >= 1 && n <= 100000) values.push(n);
+      const value = Number(match[1]);
+      if (Number.isFinite(value) && value >= 1 && value <= 100000) out.push(value);
     }
-    return values;
+    return out;
   }
 
-  async function record(values) {
-    if (!values.length) return;
+  function findCurrentMultiplier(text) {
+    // Prefer a multiplier appearing near common current-round labels.
+    const chunks = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
+    for (const chunk of chunks.slice(0, 80)) {
+      if (/^(current|live|cash out|multiplier|x)$/i.test(chunk) || /current|live multiplier/i.test(chunk)) {
+        const candidates = extractCandidates(chunk);
+        if (candidates.length) return candidates[candidates.length - 1];
+      }
+    }
+    const candidates = extractCandidates(text);
+    return candidates.length ? candidates[candidates.length - 1] : null;
+  }
+
+  async function record(value) {
+    if (value === null) return;
+    const now = Date.now();
+    // Avoid recording the same visible multiplier repeatedly while the DOM animates.
+    if (value === lastValue && now - lastRecordedAt < 3000) return;
+    lastValue = value;
+    lastRecordedAt = now;
     const data = await chrome.storage.local.get({ rounds: [] });
     const rounds = data.rounds.slice();
-    for (const value of values) {
-      const key = `${value}-${Math.floor(Date.now() / 1000)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      rounds.push({ value, ts: Date.now(), source: location.hostname });
-    }
+    const previous = rounds[rounds.length - 1];
+    // A completed round is represented by a stable multiplier. Repeated DOM scans are ignored.
+    if (previous && Number(previous.value) === value && now - previous.ts < 5000) return;
+    rounds.push({ value, ts: now, source: location.hostname });
     if (rounds.length > MAX_HISTORY) rounds.splice(0, rounds.length - MAX_HISTORY);
     await chrome.storage.local.set({ rounds });
-    window.dispatchEvent(new CustomEvent('aviator-analyzer-update'));
   }
 
-  const scan = () => record(parseMultipliers(document.body?.innerText || ''));
+  const scan = () => {
+    const text = document.body?.innerText || '';
+    if (text === lastText) return;
+    lastText = text;
+    record(findCurrentMultiplier(text));
+  };
+
   const observer = new MutationObserver(() => {
     clearTimeout(window.__aviatorScanTimer);
-    window.__aviatorScanTimer = setTimeout(scan, 250);
+    window.__aviatorScanTimer = setTimeout(scan, 300);
   });
 
-  if (document.body) observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-  scan();
+  function start() {
+    if (!document.body) return;
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    scan();
+  }
+  start();
 })();
