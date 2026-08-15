@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Aviator Live Analyzer",
-  "version": "0.1.0",
-  "description": "Read-only browser analyzer for visible Aviator round multipliers. Collects history and shows statistical risk signals.",
+  "version": "0.2.0",
+  "description": "Read-only statistical monitor for visible Aviator round history.",
   "permissions": ["storage"],
   "host_permissions": ["<all_urls>"],
   "action": {
@@ -13,7 +13,8 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ]
 }
