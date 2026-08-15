@@ -4,6 +4,11 @@
   let lastBodyText = '';
   let lastValue = null;
   let lastRecordedAt = 0;
+  let scans = 0;
+
+  async function status(extra = {}) {
+    await chrome.storage.local.set({ monitorStatus: { connected: true, url: location.href, frame: window.top === window ? 'top' : 'iframe', scans, at: Date.now(), ...extra } });
+  }
 
   function extract(text) {
     const values = [];
@@ -24,8 +29,6 @@
   }
 
   function findBestValue() {
-    // First inspect visible elements whose text is a single multiplier. This
-    // avoids accidentally recording player bets or unrelated numbers.
     const nodes = document.querySelectorAll('body *');
     let best = null;
     for (const el of nodes) {
@@ -35,15 +38,11 @@
       const v = Number(text.replace(/x/i, '').trim());
       if (!Number.isFinite(v) || v < 1 || v > 100000) continue;
       const r = el.getBoundingClientRect();
-      // Prefer larger, central visible multiplier text (usually the live game value).
       const score = r.width * r.height - Math.abs((r.left + r.width / 2) - innerWidth / 2) * 2;
       if (!best || score > best.score) best = { value: v, score };
     }
     if (best) return best.value;
-
-    // Fallback: visible round-history text.
-    const body = document.body?.innerText || '';
-    const values = extract(body);
+    const values = extract(document.body?.innerText || '');
     return values.length ? values[values.length - 1] : null;
   }
 
@@ -58,15 +57,20 @@
     if (previous && Number(previous.value) === value && now - previous.ts < 4000) return;
     const next = rounds.concat({ value, ts: now, source: location.hostname });
     if (next.length > MAX_HISTORY) next.splice(0, next.length - MAX_HISTORY);
-    await chrome.storage.local.set({ rounds: next });
+    await chrome.storage.local.set({ rounds: next, lastObservation: { value, ts: now, frame: window.top === window ? 'top' : 'iframe' } });
   }
 
   function scan() {
+    scans++;
     const text = document.body?.innerText || '';
-    if (text === lastBodyText) return;
+    if (text === lastBodyText) { status(); return; }
     lastBodyText = text;
-    record(findBestValue());
+    const value = findBestValue();
+    status({ lastCandidate: value });
+    record(value);
   }
+
+  window.addEventListener('__aviator_ws__', e => status({ websocket: e.detail?.type || 'event', websocketUrl: e.detail?.url || '' }));
 
   const observer = new MutationObserver(() => {
     clearTimeout(window.__aviatorScanTimer);
