@@ -1,63 +1,83 @@
 (() => {
-  const MULTIPLIER_RE = /\b(\d+(?:\.\d+)?)\s*x\b/gi;
+  const MULTIPLIER_RE = /(?:^|\s)(\d{1,5}(?:\.\d{1,4})?)\s*x\b/gi;
   const MAX_HISTORY = 5000;
-  let lastText = '';
+  let lastBodyText = '';
   let lastValue = null;
   let lastRecordedAt = 0;
 
-  function extractCandidates(text) {
-    const out = [];
-    let match;
+  function extract(text) {
+    const values = [];
     MULTIPLIER_RE.lastIndex = 0;
-    while ((match = MULTIPLIER_RE.exec(text)) !== null) {
-      const value = Number(match[1]);
-      if (Number.isFinite(value) && value >= 1 && value <= 100000) out.push(value);
+    let m;
+    while ((m = MULTIPLIER_RE.exec(text || ''))) {
+      const v = Number(m[1]);
+      if (Number.isFinite(v) && v >= 1 && v <= 100000) values.push(v);
     }
-    return out;
+    return values;
   }
 
-  function findCurrentMultiplier(text) {
-    // Prefer short lines that look like the current/live multiplier.
-    const chunks = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
-    for (const chunk of chunks.slice(0, 100)) {
-      if (/current|live multiplier|cash out/i.test(chunk)) {
-        const candidates = extractCandidates(chunk);
-        if (candidates.length) return candidates[candidates.length - 1];
-      }
+  function visible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect?.();
+    const s = getComputedStyle(el);
+    return !!r && r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+  }
+
+  function findBestValue() {
+    // First inspect visible elements whose text is a single multiplier. This
+    // avoids accidentally recording player bets or unrelated numbers.
+    const nodes = document.querySelectorAll('body *');
+    let best = null;
+    for (const el of nodes) {
+      if (!visible(el) || el.children.length > 0) continue;
+      const text = (el.textContent || '').trim();
+      if (!/^\d{1,5}(?:\.\d{1,4})?\s*x$/i.test(text)) continue;
+      const v = Number(text.replace(/x/i, '').trim());
+      if (!Number.isFinite(v) || v < 1 || v > 100000) continue;
+      const r = el.getBoundingClientRect();
+      // Prefer larger, central visible multiplier text (usually the live game value).
+      const score = r.width * r.height - Math.abs((r.left + r.width / 2) - innerWidth / 2) * 2;
+      if (!best || score > best.score) best = { value: v, score };
     }
-    const candidates = extractCandidates(text);
-    return candidates.length ? candidates[candidates.length - 1] : null;
+    if (best) return best.value;
+
+    // Fallback: visible round-history text.
+    const body = document.body?.innerText || '';
+    const values = extract(body);
+    return values.length ? values[values.length - 1] : null;
   }
 
   async function record(value) {
     if (value === null) return;
     const now = Date.now();
-    if (value === lastValue && now - lastRecordedAt < 3000) return;
+    if (value === lastValue && now - lastRecordedAt < 2500) return;
     lastValue = value;
     lastRecordedAt = now;
-    const data = await chrome.storage.local.get({ rounds: [] });
-    const rounds = data.rounds.slice();
+    const { rounds = [] } = await chrome.storage.local.get({ rounds: [] });
     const previous = rounds[rounds.length - 1];
-    if (previous && Number(previous.value) === value && now - previous.ts < 5000) return;
-    rounds.push({ value, ts: now, source: location.hostname });
-    if (rounds.length > MAX_HISTORY) rounds.splice(0, rounds.length - MAX_HISTORY);
-    await chrome.storage.local.set({ rounds });
+    if (previous && Number(previous.value) === value && now - previous.ts < 4000) return;
+    const next = rounds.concat({ value, ts: now, source: location.hostname });
+    if (next.length > MAX_HISTORY) next.splice(0, next.length - MAX_HISTORY);
+    await chrome.storage.local.set({ rounds: next });
   }
 
-  const scan = () => {
+  function scan() {
     const text = document.body?.innerText || '';
-    if (text === lastText) return;
-    lastText = text;
-    record(findCurrentMultiplier(text));
-  };
+    if (text === lastBodyText) return;
+    lastBodyText = text;
+    record(findBestValue());
+  }
 
   const observer = new MutationObserver(() => {
     clearTimeout(window.__aviatorScanTimer);
-    window.__aviatorScanTimer = setTimeout(scan, 300);
+    window.__aviatorScanTimer = setTimeout(scan, 200);
   });
 
-  if (document.body) {
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  function start() {
+    if (!document.body) return setTimeout(start, 500);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
     scan();
+    setInterval(scan, 1000);
   }
+  start();
 })();
